@@ -2,16 +2,17 @@
   "name": "pearl-test-1",
   "display_name": "Pearl PRL test 1 GPU",
   "autostart_policy": false,
-  "replicas": 1,
+  "replicas": 10,
   "restart_policy": "always",
   "container": {
     "image": "ghcr.io/YOUR_GITHUB_USER/pearl-salad-miner:latest",
-    "priority": "batch",
+    "priority": "low",
     "resources": {
       "cpu": 2,
       "memory": 4096,
       "gpu_classes": [
-        "PASTE-GPU-CLASS-UUID-FROM-salad-api.sh-gpu-classes"
+        "851399fb-7329-4195-a042-d6514b28cf33",
+        "ed563892-aacd-40f5-80b7-90c9be6c759b"
       ]
     },
     "environment_variables": {
