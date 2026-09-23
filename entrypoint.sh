@@ -261,6 +261,12 @@ run_miner() {
       if (( rc <= 128 )); then
         break   # EOF: the miner closed its output (it exited)
       fi
+      # read timed out: if the miner process itself is gone (a crashed miner can leave a child
+      # holding the pipe open), treat it as an exit instead of waiting for the watchdog
+      if ! kill -0 "$MINER_PID" 2>/dev/null; then
+        log "miner process $m is gone although its output pipe is still open; treating as exit"
+        break
+      fi
     fi
 
     now=$(date +%s)
