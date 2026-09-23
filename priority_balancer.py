@@ -153,8 +153,9 @@ def main():
         new = not os.path.exists(p)
         if not new:
             with open(p, encoding="utf-8") as f:
-                if f.readline().rstrip("\r\n").split(",") != fields:
-                    os.replace(p, p + "." + dt.datetime.now().strftime("%Y%m%d%H%M%S") + ".bak"); new = True
+                header = f.readline().rstrip("\r\n").split(",")
+            if header != fields:  # schema changed: rotate (file is closed by now, Windows needs that)
+                os.replace(p, p + "." + dt.datetime.now().strftime("%Y%m%d%H%M%S") + ".bak"); new = True
         with open(p, "a", newline="", encoding="utf-8") as f:
             w = csv.DictWriter(f, fieldnames=fields)
             if new:
