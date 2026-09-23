@@ -135,6 +135,24 @@ Completează `test-log.csv` cu:
 
 Regulile ghidului: nu aduna pending cu paid, nu trata o cotație ca pe o vânzare, iar o fereastră fără date din pool sau din Salad e „necunoscut”, nu zero.
 
+## 2a. Actualizare 23 sept 2026, seara: PearlHash + WildRig, plată în SafeTrade
+
+Decizia utilizatorului, pe baza experienței unui cunoscut care rulează 500 de GPU-uri pe Salad cu WildRig pe PearlHash:
+
+- **Pool:** `pool.pearlhash.xyz:9000`, fee 1%, plată după fiecare epoch de la 1 PRL, direct la adresa de depozit SafeTrade.
+- **Miner:** `MINER="wildrig srb"`. WildRig (OpenCL, 0% devfee pe PearlHash) primul; dacă moare înainte de primul share, entrypoint-ul trece automat la SRBMiner (2% devfee). krig rămâne disponibil pentru Kryptex.
+- **Imagine:** `ghcr.io/scythy21/pearl-salad-miner:sha-761ed5b`, cu loader OpenCL (`ocl-icd-libopencl1`) și ICD-ul NVIDIA. Grupul Salad: `pearl-hash-1`, definit în `container-group.pearlhash.json`.
+- **Neverificat încă:** dacă nodurile Salad expun OpenCL pentru WildRig. Linia `opencl:` din log și `FIRST ACCEPTED SHARE (miner=...)` răspund la asta.
+
+## 2c. Dashboard local
+
+```powershell
+cd "C:\Users\suntu\Desktop\VisualStudio projects\Pearl Mining\salad"
+python monitor.py --serve 8787 --interval 120
+```
+
+Apoi deschide **http://localhost:8787/**. Pagina se reîmprospătează la 30 s și arată: marja estimată pe zi, profitul realizat (PRL creditat × preț − cost), costul Salad estimat, instanțe, hashrate, prețul SafeTrade, PRL creditat, venitul estimat; grafice pe interval (1h / 6h / 24h / 7 zile / tot) pentru hashrate, cost vs venit cumulat, preț și instanțe; tabel cu nodurile; vedere tabelară a istoricului. Rulează doar pe PC-ul tău (localhost), fără servicii externe în afara CDN-ului pentru Chart.js.
+
 ## 2b. Monitorizare: `monitor.py`
 
 Adună la fiecare 10 minute (sau cât setezi) datele din trei surse și le scrie în `data/`:
