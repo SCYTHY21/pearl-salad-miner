@@ -6,7 +6,7 @@
   "restart_policy": "always",
   "container": {
     "image": "ghcr.io/scythy21/pearl-salad-miner:sha-761ed5b",
-    "priority": "low",
+    "priority": "medium",
     "resources": {
       "cpu": 2,
       "memory": 4096,
