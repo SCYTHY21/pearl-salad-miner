@@ -144,9 +144,9 @@ build_cmd() {  # miner pool -> sets global array cmd
   local m=$1 p=$2
   case "$m" in
     wildrig)
-      cmd=(/opt/miners/wildrig/wildrig-multi --algo pearlhash --url "$p" --user "$WALLET" --worker "$WORKER"
-           --opencl-platforms nvidia --no-color --print-time 30 --api-port "$API_PORT")
-      [[ -n "$POOL_PASSWORD" ]] && cmd+=(--pass "$POOL_PASSWORD")
+      # WALLET.WORKER + "--pass x" is the form a working PearlHash/Salad setup reported (2026-09-23)
+      cmd=(/opt/miners/wildrig/wildrig-multi --algo pearlhash --url "$p" --user "$WALLET.$WORKER" --pass "${POOL_PASSWORD:-x}"
+           --no-color --print-time 30 --api-port "$API_PORT")
       ;;
     srb)
       if [[ "$p" == *kryptex* ]]; then
@@ -223,7 +223,9 @@ run_miner() {
   fifo=$(mktemp -u /tmp/miner.XXXXXX)
   mkfifo "$fifo" || die "cannot create FIFO"
   cd "$(dirname "${cmd[0]}")" || die "miner directory missing"
-  "${cmd[@]}" >"$fifo" 2>&1 &
+  # stdin from /dev/null: the container's stdin is closed on SaladCloud and WildRig aborts in
+  # libuv (uv__read_start assertion) when it tries to watch the keyboard on an invalid fd
+  "${cmd[@]}" </dev/null >"$fifo" 2>&1 &
   MINER_PID=$!
   exec 3<"$fifo"
   rm -f "$fifo"
