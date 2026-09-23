@@ -16,7 +16,7 @@
       ]
     },
     "environment_variables": {
-      "WALLET": "prl1pjnk7yt52kzgn3lx2axsat3tu2szuepl7en9hvesw9qll2hlllx2qjzls9a",
+      "WALLET": "prl1pt2yejr6fyh3cdrspa4mz4xfr5m6q5rs0w0yqvx795ssk2zhxxtts4wjyq4",
       "MINER": "krig",
       "POOL_AUTO": "1",
       "LOG_LEVEL": "debug",
