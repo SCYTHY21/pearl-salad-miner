@@ -274,7 +274,9 @@ def snapshot(env, salad, kx, state, interval):
                 errors.append(f"salad instances {gname}: " + err2)
                 continue
             for i in ins.get("instances", []):
-                gid = i.get("gpu_class") or i.get("gpu_class_id") or ""
+                # the instance object carries no GPU class (seen 2026-09-23); fall back to the group's
+                # class when it has exactly one, otherwise the price stays unknown (0)
+                gid = i.get("gpu_class") or i.get("gpu_class_id") or (gpu_ids[0] if len(gpu_ids) == 1 else "")
                 cls = salad.classes.get(gid, {})
                 name = cls.get("name") or gid or "unknown"
                 price = cls.get("prices", {}).get(priority, 0.0)
