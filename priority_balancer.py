@@ -1,26 +1,30 @@
 #!/usr/bin/env python3
 """
-Priority balancer: keep as many replicas as possible on the LOW-priority group and
-the rest on the MEDIUM-priority group, within the replica quota.
+Priority balancer: spread a fixed replica quota over identical container groups that
+differ only in priority, always preferring the cheapest tier that has free nodes.
 
-Why two groups instead of flipping one group's priority: changing a group's priority
-redeploys every instance (lost startup minutes each time). Moving replica counts between
-two identical groups only touches the instances that actually change.
+Tiers are given cheapest first; the LAST tier is the fallback that absorbs whatever
+the cheaper tiers cannot place. Default:
+    pearl-hash-lowest:batch  ->  pearl-hash-low:low  ->  pearl-hash-1:medium (fallback)
 
-Loop (every INTERVAL seconds):
-  1. read live availability for the GPU class (available_gpu_low)
-  2. read both groups: running / allocating counts
-  3. decide targets with hysteresis:
-       - grow LOW only when nodes are actually free at low priority
-       - shrink LOW when its replicas sit in "allocating" for longer than STUCK_MIN
-         (nobody is giving us low nodes), so MEDIUM can use the quota instead
-       - never exceed TOTAL replicas across both groups
-       - at most one change per tick
-  4. PATCH replicas, log every decision to data/balancer.csv
+Why several groups instead of flipping one group's priority: changing a group's
+priority redeploys every instance (lost startup minutes each time). Moving replica
+counts between identical groups only touches the instances that actually change.
 
-    python priority_balancer.py --dry-run          # print decisions, change nothing
-    python priority_balancer.py                    # act, every 300 s
-    python priority_balancer.py --interval 180 --total 10
+Each tick (INTERVAL seconds):
+  1. read live availability for the GPU class per priority (batch / low / medium)
+  2. read every group: running / allocating / replicas
+  3. cheapest tier first:
+       keep   = running + allocating   (allocating dropped once "stuck": nothing available
+                                        at that tier for STUCK_AFTER minutes)
+       grow   = min(available_at_tier, remaining) only when nothing is pending there
+       target = keep + grow ; remaining -= target
+     fallback tier gets the remainder
+  4. PATCH replicas (shrinks first, then grows), log every decision to data/balancer.csv
+
+    python priority_balancer.py --dry-run
+    python priority_balancer.py --interval 300
+    python priority_balancer.py --tiers pearl-hash-low:low,pearl-hash-1:medium --total 10
 
 Secrets come from .env (SALAD_API_KEY, SALAD_ORG, SALAD_PROJECT). Never printed.
 """
@@ -31,12 +35,12 @@ import json
 import os
 import sys
 import time
+import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from monitor import DATA, SALAD_API, get_json, load_env, iso, now_utc  # noqa: E402
 
-FIELDS = ["ts", "avail_low", "avail_medium", "low_running", "low_allocating", "low_replicas",
-          "med_running", "med_allocating", "med_replicas", "low_stuck_min", "action", "new_low", "new_med", "note"]
+AVAIL_KEY = {"batch": "available_gpu_batch", "low": "available_gpu_low", "medium": "available_gpu_medium", "high": "available_gpu_high"}
 
 
 class Salad:
@@ -52,7 +56,6 @@ class Salad:
         return get_json(f"{SALAD_API}/organizations/{self.org}/availability/sce-gpu-availability", self.h, body)
 
     def set_replicas(self, name, n):
-        import urllib.request
         req = urllib.request.Request(
             f"{SALAD_API}/organizations/{self.org}/projects/{self.project}/containers/{name}",
             data=json.dumps({"replicas": int(n)}).encode(), method="PATCH",
@@ -63,36 +66,37 @@ class Salad:
 
 def counts(g):
     c = (g or {}).get("current_state", {}).get("instance_status_counts", {})
-    return c.get("running_count", 0), c.get("allocating_count", 0) + c.get("creating_count", 0), (g or {}).get("replicas", 0)
+    return c.get("running_count", 0), c.get("allocating_count", 0) + c.get("creating_count", 0), int((g or {}).get("replicas") or 0)
 
 
-def decide(avail_low, low_run, low_alloc, low_rep, med_run, med_alloc, med_rep, low_stuck_min, total, stuck_after):
-    """Returns (new_low, new_med, action, note)."""
-    cur_total = low_rep + med_rep
-    # 1. low replicas stuck allocating with nothing available -> hand them to medium
-    if low_alloc > 0 and avail_low == 0 and low_stuck_min >= stuck_after:
-        new_low = max(low_run, low_rep - low_alloc)
-        return new_low, min(total, total - new_low), "shrink_low", f"{low_alloc} low replicas allocating for {low_stuck_min:.0f} min with 0 available"
-    # 2. free low nodes and room to grow (either unused quota or medium replicas we can move)
-    if avail_low > 0 and low_alloc == 0:
-        grow = min(avail_low, total - low_rep)
-        if grow > 0:
-            new_low = low_rep + grow
-            new_med = max(0, min(med_rep, total - new_low))
-            return new_low, new_med, "grow_low", f"{avail_low} low nodes available; moving {grow} replica(s) to low"
-    # 3. quota not fully used and low is not stuck -> fill medium
-    if cur_total < total and not (low_alloc > 0 and avail_low == 0):
-        return low_rep, med_rep + (total - cur_total), "fill_medium", f"{total - cur_total} unused replica(s) -> medium"
-    return low_rep, med_rep, "hold", ""
+def decide(tiers, avail, total, stuck_after):
+    """tiers: list of dicts {name, prio, run, alloc, rep, stuck_min}; returns list of targets + notes."""
+    remaining = total
+    targets, notes = [], []
+    for t in tiers[:-1]:
+        a = avail.get(AVAIL_KEY[t["prio"]], 0) or 0
+        stuck = t["alloc"] > 0 and a == 0 and t["stuck_min"] >= stuck_after
+        keep = t["run"] + (0 if stuck else t["alloc"])
+        keep = min(keep, remaining)
+        grow = min(a, remaining - keep) if (a > 0 and t["alloc"] == 0) else 0
+        target = keep + grow
+        if stuck:
+            notes.append(f"{t['name']}: {t['alloc']} allocating {t['stuck_min']:.0f} min with 0 free -> release")
+        if grow:
+            notes.append(f"{t['name']}: {a} free at {t['prio']} -> +{grow}")
+        targets.append(target)
+        remaining -= target
+    targets.append(max(0, remaining))
+    return targets, notes
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--low", default="pearl-hash-low")
-    ap.add_argument("--medium", default="pearl-hash-1")
-    ap.add_argument("--total", type=int, default=10, help="replica quota shared by both groups")
+    ap.add_argument("--tiers", default="pearl-hash-lowest:batch,pearl-hash-low:low,pearl-hash-1:medium",
+                    help="cheapest first, name:priority pairs; the last one is the fallback")
+    ap.add_argument("--total", type=int, default=10, help="replica quota shared by all groups")
     ap.add_argument("--interval", type=int, default=300)
-    ap.add_argument("--stuck-after", type=int, default=10, help="minutes a low replica may sit allocating before giving it to medium")
+    ap.add_argument("--stuck-after", type=int, default=10, help="minutes a cheap-tier replica may sit allocating before being released")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--once", action="store_true")
     args = ap.parse_args()
@@ -106,53 +110,53 @@ def main():
             sys.exit(f"{k} missing in .env")
     salad = Salad(env)
     os.makedirs(DATA, exist_ok=True)
-    low_alloc_since = None
+    tiers = [{"name": n, "prio": p} for n, p in (x.split(":") for x in args.tiers.split(","))]
+    alloc_since = {t["name"]: None for t in tiers}
+    fields = ["ts", "avail_batch", "avail_low", "avail_medium"] + [f"{k}_{t['name']}" for t in tiers for k in ("run", "alloc", "rep", "target")] + ["changed", "notes"]
     while True:
-        t = now_utc()
-        gl, e1 = salad.group(args.low)
-        gm, e2 = salad.group(args.medium)
-        if e1 or e2:
-            print(iso(t), "error reading groups:", e1 or e2); time.sleep(args.interval); continue
-        res = gm.get("container", {}).get("resources", {})
+        t0 = now_utc()
+        ok = True
+        for t in tiers:
+            g, err = salad.group(t["name"])
+            if err:
+                print(iso(t0), f"error reading {t['name']}: {err}"); ok = False; break
+            t["run"], t["alloc"], t["rep"] = counts(g)
+            t["group"] = g
+            if t["alloc"] > 0:
+                alloc_since[t["name"]] = alloc_since[t["name"]] or t0
+            else:
+                alloc_since[t["name"]] = None
+            t["stuck_min"] = (t0 - alloc_since[t["name"]]).total_seconds() / 60 if alloc_since[t["name"]] else 0.0
+        if not ok:
+            time.sleep(args.interval); continue
+        res = tiers[-1]["group"].get("container", {}).get("resources", {})
         av, e3 = salad.availability(res.get("gpu_classes", []), res.get("cpu", 2), res.get("memory", 4096))
         if e3:
-            print(iso(t), "availability unknown:", e3, "-> holding"); time.sleep(args.interval); continue
-        avail_low, avail_med = av.get("available_gpu_low", 0), av.get("available_gpu_medium", 0)
-        low_run, low_alloc, low_rep = counts(gl)
-        med_run, med_alloc, med_rep = counts(gm)
-        if low_alloc > 0:
-            low_alloc_since = low_alloc_since or t
-        else:
-            low_alloc_since = None
-        stuck_min = (t - low_alloc_since).total_seconds() / 60 if low_alloc_since else 0.0
-        new_low, new_med, action, note = decide(avail_low, low_run, low_alloc, low_rep, med_run, med_alloc, med_rep, stuck_min, args.total, args.stuck_after)
-        changed = (new_low != low_rep) or (new_med != med_rep)
-        line = (f"{iso(t)} avail low/med={avail_low}/{avail_med} | LOW run/alloc/rep={low_run}/{low_alloc}/{low_rep} "
-                f"| MED run/alloc/rep={med_run}/{med_alloc}/{med_rep} | {action}: {note or '-'}"
-                + (f" -> low={new_low} med={new_med}" if changed else ""))
-        print(line)
-        if changed and not args.dry_run:
+            print(iso(t0), "availability unknown:", e3, "-> holding"); time.sleep(args.interval); continue
+        targets, notes = decide(tiers, av, args.total, args.stuck_after)
+        changes = [(t, tgt) for t, tgt in zip(tiers, targets) if tgt != t["rep"]]
+        summary = " | ".join(f"{t['name'].replace('pearl-hash-', '')}[{t['prio']}] run/alloc/rep={t['run']}/{t['alloc']}/{t['rep']}" + (f"->{tgt}" if tgt != t['rep'] else "") for t, tgt in zip(tiers, targets))
+        print(f"{iso(t0)} avail batch/low/med={av.get('available_gpu_batch', 0)}/{av.get('available_gpu_low', 0)}/{av.get('available_gpu_medium', 0)} | {summary} | {'; '.join(notes) or 'hold'}")
+        if changes and not args.dry_run:
             try:
-                # shrink first so the quota is never exceeded, then grow
-                if new_med < med_rep:
-                    salad.set_replicas(args.medium, new_med)
-                if new_low < low_rep:
-                    salad.set_replicas(args.low, new_low)
-                if new_low > low_rep:
-                    salad.set_replicas(args.low, new_low)
-                if new_med > med_rep:
-                    salad.set_replicas(args.medium, new_med)
-                if new_low > low_rep:
-                    low_alloc_since = t  # the new low replicas start allocating now
+                for t, tgt in sorted(changes, key=lambda x: x[1] - x[0]["rep"]):  # shrinks (negative delta) first
+                    salad.set_replicas(t["name"], tgt)
+                    if tgt > t["rep"]:
+                        alloc_since[t["name"]] = t0
             except Exception as e:
-                print(iso(t), "PATCH failed:", e); note += f" | PATCH failed: {e}"
-        row = dict(ts=iso(t), avail_low=avail_low, avail_medium=avail_med, low_running=low_run, low_allocating=low_alloc, low_replicas=low_rep,
-                   med_running=med_run, med_allocating=med_alloc, med_replicas=med_rep, low_stuck_min=round(stuck_min, 1),
-                   action=(action if changed else "hold") + (" (dry-run)" if args.dry_run and changed else ""), new_low=new_low, new_med=new_med, note=note)
+                print(iso(t0), "PATCH failed:", e); notes.append(f"PATCH failed: {e}")
+        row = {"ts": iso(t0), "avail_batch": av.get("available_gpu_batch"), "avail_low": av.get("available_gpu_low"), "avail_medium": av.get("available_gpu_medium"),
+               "changed": bool(changes) and not args.dry_run, "notes": "; ".join(notes) + (" (dry-run)" if args.dry_run and changes else "")}
+        for t, tgt in zip(tiers, targets):
+            row.update({f"run_{t['name']}": t["run"], f"alloc_{t['name']}": t["alloc"], f"rep_{t['name']}": t["rep"], f"target_{t['name']}": tgt})
         p = os.path.join(DATA, "balancer.csv")
         new = not os.path.exists(p)
+        if not new:
+            with open(p, encoding="utf-8") as f:
+                if f.readline().rstrip("\r\n").split(",") != fields:
+                    os.replace(p, p + "." + dt.datetime.now().strftime("%Y%m%d%H%M%S") + ".bak"); new = True
         with open(p, "a", newline="", encoding="utf-8") as f:
-            w = csv.DictWriter(f, fieldnames=FIELDS)
+            w = csv.DictWriter(f, fieldnames=fields)
             if new:
                 w.writeheader()
             w.writerow(row)
