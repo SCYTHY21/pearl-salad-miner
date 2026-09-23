@@ -243,53 +243,60 @@ def safetrade_price():
 def snapshot(env, salad, kx, state, interval):
     t = now_utc()
     errors = []
-    group_name = env.get("GROUP", "pearl-test-1")
+    groups = [x.strip() for x in env.get("GROUP", "pearl-test-1").replace(";", ",").split(",") if x.strip()]
+    group_name = ",".join(groups)
 
-    # --- Salad
+    # --- Salad (one or more container groups, e.g. a low-priority and a medium-priority twin)
     running = creating = allocating = 0
-    replicas = None
-    status = "n/a"
+    replicas = 0
+    statuses = []
     inst_rows = []
     class_counts = {}
     cost_rate = 0.0  # USD/h for currently running instances
     avail = {}
+    gpu_ids_all = []
     if salad.ok():
-        g, err = salad.group(group_name)
-        if err:
-            errors.append("salad group: " + err)
-        else:
+        for gname in groups:
+            g, err = salad.group(gname)
+            if err:
+                errors.append(f"salad group {gname}: " + err)
+                continue
             cs = g.get("current_state", {})
-            status = cs.get("status", "n/a")
-            replicas = g.get("replicas")
+            statuses.append(f"{gname}={cs.get('status', 'n/a')}")
+            replicas += int(g.get("replicas") or 0)
             c = cs.get("instance_status_counts", {})
-            running, creating, allocating = c.get("running_count", 0), c.get("creating_count", 0), c.get("allocating_count", 0)
+            running += c.get("running_count", 0); creating += c.get("creating_count", 0); allocating += c.get("allocating_count", 0)
             priority = g.get("priority", "low")
             gpu_ids = g.get("container", {}).get("resources", {}).get("gpu_classes", [])
-            ins, err2 = salad.instances(group_name)
+            gpu_ids_all += [x for x in gpu_ids if x not in gpu_ids_all]
+            ins, err2 = salad.instances(gname)
             if err2:
-                errors.append("salad instances: " + err2)
-            else:
-                for i in ins.get("instances", []):
-                    gid = i.get("gpu_class") or i.get("gpu_class_id") or ""
-                    cls = salad.classes.get(gid, {})
-                    name = cls.get("name") or gid or "unknown"
-                    price = cls.get("prices", {}).get(priority, 0.0)
-                    st = i.get("state", "")
-                    inst_rows.append({
-                        "ts": iso(t), "machine_id": i.get("machine_id", ""), "worker": sanitize_worker(i.get("machine_id", "")),
-                        "state": st, "ready": i.get("ready"), "started": i.get("started"), "gpu_class": name,
-                        "price_usd_h": price, "update_time": i.get("update_time", ""), "raw_keys": ";".join(sorted(i.keys())),
-                    })
-                    if st == "running":
-                        class_counts[name] = class_counts.get(name, 0) + 1
-                        cost_rate += price
-            av, err3 = salad.availability(gpu_ids) if gpu_ids else ({}, None)
-            if err3:
-                errors.append("salad availability: " + err3)
-            else:
-                avail = av or {}
+                errors.append(f"salad instances {gname}: " + err2)
+                continue
+            for i in ins.get("instances", []):
+                gid = i.get("gpu_class") or i.get("gpu_class_id") or ""
+                cls = salad.classes.get(gid, {})
+                name = cls.get("name") or gid or "unknown"
+                price = cls.get("prices", {}).get(priority, 0.0)
+                st = i.get("state", "")
+                inst_rows.append({
+                    "ts": iso(t), "group": gname, "priority": priority, "machine_id": i.get("machine_id", ""),
+                    "worker": sanitize_worker(i.get("machine_id", "")),
+                    "state": st, "ready": i.get("ready"), "started": i.get("started"), "gpu_class": name,
+                    "price_usd_h": price, "update_time": i.get("update_time", ""), "raw_keys": ";".join(sorted(i.keys())),
+                })
+                if st == "running":
+                    key = f"{name}@{priority}"
+                    class_counts[key] = class_counts.get(key, 0) + 1
+                    cost_rate += price
+        av, err3 = salad.availability(gpu_ids_all) if gpu_ids_all else ({}, None)
+        if err3:
+            errors.append("salad availability: " + err3)
+        else:
+            avail = av or {}
     else:
         errors.append("salad: SALAD_API_KEY / SALAD_ORG missing in .env")
+    status = ";".join(statuses) if statuses else "n/a"
 
     # accumulate estimated cost: running instances × price × elapsed since last tick (gap capped)
     if state.get("last_ts"):
@@ -392,7 +399,7 @@ SNAP_FIELDS = ["ts", "group", "status", "replicas", "running", "creating", "allo
                "ph_hashrate_ths", "ph_balance", "ph_paid", "ph_workers", "ph_pool_ehs",
                "price_safetrade_usdt", "price_kryptex_usd", "volume_24h_usd", "bids_2pct_usd", "spread_pct",
                "cost_rate_usd_h", "cost_est_cum_usd", "prl_day_from_hashrate", "rev_day_usd", "cost_day_usd", "margin_day_usd", "errors"]
-INST_FIELDS = ["ts", "machine_id", "worker", "state", "ready", "started", "gpu_class", "price_usd_h", "update_time", "raw_keys"]
+INST_FIELDS = ["ts", "group", "priority", "machine_id", "worker", "state", "ready", "started", "gpu_class", "price_usd_h", "update_time", "raw_keys"]
 WORK_FIELDS = ["ts", "worker", "status", "ths_30m", "ths_3h", "ths_24h", "valid", "stale", "invalid", "last_share", "opened_at"]
 
 
@@ -491,7 +498,8 @@ def history_payload(since_s=0):
             kw = kx_w.get(w, {})
             hs = pw.get("estimated_hashrate_5m") or pw.get("hashrate") or pw.get("hashrate_5m")
             nodes.append({
-                "worker": w, "machine_id": i.get("machine_id"), "state": i.get("state"), "gpu_class": i.get("gpu_class"),
+                "worker": w, "machine_id": i.get("machine_id"), "state": i.get("state"),
+                "gpu_class": (i.get("gpu_class") or "") + (f" · {i['priority']}" if i.get("priority") else ""),
                 "price_usd_h": float(i["price_usd_h"]) if i.get("price_usd_h") not in (None, "") else None,
                 "ths": ths(hs) if hs else (float(kw["ths_30m"]) if kw.get("ths_30m") else None),
                 "last_share": pw.get("last_share") or pw.get("lastShare") or kw.get("last_share"),

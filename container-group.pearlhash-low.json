@@ -1,0 +1,25 @@
+{
+  "name": "pearl-hash-low",
+  "display_name": "Pearl PearlHash 4090 LOW",
+  "autostart_policy": true,
+  "replicas": 0,
+  "restart_policy": "always",
+  "container": {
+    "image": "ghcr.io/scythy21/pearl-salad-miner:sha-761ed5b",
+    "priority": "low",
+    "resources": {
+      "cpu": 2,
+      "memory": 4096,
+      "gpu_classes": [
+        "ed563892-aacd-40f5-80b7-90c9be6c759b"
+      ]
+    },
+    "environment_variables": {
+      "WALLET": "prl1pt2yejr6fyh3cdrspa4mz4xfr5m6q5rs0w0yqvx795ssk2zhxxtts4wjyq4",
+      "MINER": "wildrig srb",
+      "STARTUP_GRACE": "600",
+      "NO_SHARE_TIMEOUT": "900",
+      "STATUS_EVERY": "600"
+    }
+  }
+}
