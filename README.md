@@ -135,6 +135,30 @@ Completează `test-log.csv` cu:
 
 Regulile ghidului: nu aduna pending cu paid, nu trata o cotație ca pe o vânzare, iar o fereastră fără date din pool sau din Salad e „necunoscut”, nu zero.
 
+## 2b. Monitorizare: `monitor.py`
+
+Adună la fiecare 10 minute (sau cât setezi) datele din trei surse și le scrie în `data/`:
+
+| Sursă | Ce citește | Fișier |
+| --- | --- | --- |
+| SaladCloud API | starea grupului, instanțele (mașină, stare, clasă GPU, preț), disponibilitatea live | `data/instances.csv`, `data/snapshots.csv` |
+| Kryptex API (fără cheie) | sold pending/confirmat/plătit, fiecare worker cu hashrate 30m/3h/24h și shares valid/stale/invalid | `data/workers.csv`, `data/snapshots.csv` |
+| CoinGecko | prețul PRL/USDT pe SafeTrade, volumul pe 24 h, bidurile din 2% sub preț | `data/snapshots.csv` |
+
+Din ele calculează costul estimat (instanțe *running* × prețul clasei × timp), PRL pe zi din hashrate-ul măsurat, venitul și marja pe zi. Recompensele Kryptex se confirmă după `maturation_time` (~5,4 ore), deci `prl_confirmed` rămâne 0 în primele ore chiar dacă `prl_unconfirmed` crește.
+
+```powershell
+cd "C:\Users\suntu\Desktop\VisualStudio projects\Pearl Mining\salad"
+python monitor.py --once            # o citire
+python monitor.py --interval 300    # buclă la 5 minute, Ctrl+C oprește
+python monitor.py --report          # rezumat pe tot ce s-a strâns: TH/s pe worker, cost, PRL, marjă realizată
+```
+
+Are nevoie de `.env` cu `SALAD_API_KEY`, `SALAD_ORG`, `SALAD_PROJECT`, `WALLET`, `GROUP`. Fișierul e ignorat de git. Workerii Kryptex se leagă de instanțele Salad prin nume: `s` + primele 10 caractere din `SALAD_MACHINE_ID`.
+
+Endpointuri Kryptex folosite (descoperite din aplicația lor web, nedocumentate oficial, pot fi schimbate fără preaviz):
+`/prl/api/v1/miner/balance/<adresă>`, `/prl/api/v3/miner/workers/<adresă>`, `/prl/api/v1/miner/payouts/<adresă>/stats`, `/api/v1/rates`.
+
 ## 3. Variabile de mediu
 
 | Variabilă | Implicit | Ce face |
@@ -163,7 +187,7 @@ Regulile ghidului: nu aduna pending cu paid, nu trata o cotație ca pe o vânzar
 
 1. Salad facturează **pe secundă, doar cât instanța rulează**, din creditul preplătit. Descărcarea imaginii și pornirea nu se plătesc.
 2. Kryptex PPS+ plătește pe share, indiferent de norocul poolului. Payout automat **orar** când soldul depășește **1 PRL**, fără taxă de tranzacție. Un RTX 4090 face ~0,25 PRL/oră, deci prima plată vine după ~4 ore.
-3. PRL ajunge în walletul tău. Vânzarea: CoinEx PEARL/USDT. Verifică înainte că depunerile de PRL sunt active pe CoinEx și că activul listat e Pearl Network, nu altceva cu nume similar.
+3. PRL ajunge în walletul tău. Vânzarea: **SafeTrade PRL/USDT**, la 23 sept 2026 cu ~6,6 M USD volum pe 24 h, spread 0,67% și ~26.000 USD în biduri la 2% sub preț (CoinGecko). CoinEx are volum de ~230 de ori mai mic și nu e o ieșire utilă. Verifică în contul SafeTrade că depunerile de PRL sunt deschise înainte de prima plată.
 
 ## 5. Economia la 23 septembrie 2026
 
