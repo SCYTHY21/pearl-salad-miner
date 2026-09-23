@@ -11,8 +11,7 @@
       "cpu": 2,
       "memory": 4096,
       "gpu_classes": [
-        "ed563892-aacd-40f5-80b7-90c9be6c759b",
-        "851399fb-7329-4195-a042-d6514b28cf33"
+        "ed563892-aacd-40f5-80b7-90c9be6c759b"
       ]
     },
     "environment_variables": {
