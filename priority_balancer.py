@@ -59,7 +59,8 @@ class Salad:
         req = urllib.request.Request(
             f"{SALAD_API}/organizations/{self.org}/projects/{self.project}/containers/{name}",
             data=json.dumps({"replicas": int(n)}).encode(), method="PATCH",
-            headers={**self.h, "Content-Type": "application/merge-patch+json", "Accept": "application/json"})
+            headers={**self.h, "Content-Type": "application/merge-patch+json", "Accept": "application/json",
+                     "User-Agent": "pearl-salad-balancer/1.0"})  # the default Python-urllib agent gets 403 from the API edge
         with urllib.request.urlopen(req, timeout=30) as r:
             return r.status
 
