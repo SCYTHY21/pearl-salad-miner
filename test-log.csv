@@ -1,0 +1,2 @@
+test_id,gpu_class,priority,price_usd_per_h,salad_machine_id,start_utc,first_share_utc,seconds_to_first_share,stop_utc,hours_billed,usd_billed,accepted_shares,rejected_shares,avg_ths,reallocations,prl_pending,prl_paid,prl_sold,usd_from_sale,net_usd,notes
+example-4090-batch,RTX 4090 (24 GB),batch,0.204,abcd1234,2026-09-24T10:00:00Z,2026-09-24T10:04:30Z,270,2026-09-25T10:00:00Z,23.6,4.81,,,,1,,,,,,"exemplu: completeaza din STATUS lines, portal Salad (Billing) si pool.kryptex.com/prl (cauta walletul)"

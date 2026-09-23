@@ -1,0 +1,4 @@
+# The entrypoint runs inside a Linux container: it must keep LF line endings
+# even when the repo is checked out on Windows.
+*.sh text eol=lf
+Dockerfile text eol=lf

@@ -1,0 +1,23 @@
+# Local test on your own NVIDIA GPU (Docker Desktop + WSL2 backend on Windows,
+# or Docker + NVIDIA Container Toolkit on Linux). Same WSL2-style environment
+# as SaladCloud nodes, so it is a good pre-flight before paying for a Pod.
+#
+#   copy .env.example .env   (fill WALLET)
+#   docker compose up --build
+services:
+  pearl-miner:
+    build: .
+    image: pearl-salad-miner:local
+    env_file: .env
+    environment:
+      POOL_AUTO: "1"
+      LOG_LEVEL: ${LOG_LEVEL:-debug}
+      STATUS_EVERY: "300"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: "no"
