@@ -556,6 +556,10 @@ def main():
     args = ap.parse_args()
     if args.report:
         report(); return
+    try:
+        sys.stdout.reconfigure(line_buffering=True)  # summaries reach the log file immediately
+    except Exception:
+        pass
 
     env = load_env()
     wallet = env.get("WALLET")
