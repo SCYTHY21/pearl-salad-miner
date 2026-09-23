@@ -23,9 +23,12 @@ import json
 import os
 import re
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs, urlparse
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DATA = os.path.join(HERE, "data")
@@ -91,11 +94,50 @@ def ths(hps):
 
 def append_csv(path, row, fieldnames):
     new = not os.path.exists(path)
+    if not new:
+        with open(path, encoding="utf-8") as f:
+            header = f.readline().rstrip("\r\n").split(",")
+        if header != fieldnames:  # schema changed: keep the old file aside, start a fresh one
+            os.replace(path, path + "." + dt.datetime.now().strftime("%Y%m%d%H%M%S") + ".bak")
+            new = True
     with open(path, "a", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
         if new:
             w.writeheader()
         w.writerow(row)
+
+
+def read_rows(path):
+    if not os.path.exists(path):
+        return []
+    with open(path, encoding="utf-8") as f:
+        return list(csv.DictReader(f))
+
+
+def parse_ts(s):
+    return dt.datetime.strptime(s, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=dt.timezone.utc)
+
+
+MAX_GAP_H = 1.0  # when the monitor was down, assume the last cost rate continued for at most this long
+
+
+def cum_cost(rows):
+    """Cumulative estimated Salad cost per snapshot row: running instances x class price x elapsed time."""
+    out, total, prev_t, prev_rate = [], 0.0, None, 0.0
+    for r in rows:
+        try:
+            t = parse_ts(r["ts"])
+        except Exception:
+            out.append(round(total, 4)); continue
+        if prev_t is not None:
+            total += prev_rate * min((t - prev_t).total_seconds() / 3600.0, MAX_GAP_H)
+        out.append(round(total, 4))
+        prev_t = t
+        try:
+            prev_rate = float(r.get("cost_rate_usd_h") or 0)
+        except ValueError:
+            prev_rate = 0.0
+    return out
 
 
 # ----------------------------------------------------------------------------- sources
@@ -205,6 +247,7 @@ def snapshot(env, salad, kx, state, interval):
 
     # --- Salad
     running = creating = allocating = 0
+    replicas = None
     status = "n/a"
     inst_rows = []
     class_counts = {}
@@ -217,6 +260,7 @@ def snapshot(env, salad, kx, state, interval):
         else:
             cs = g.get("current_state", {})
             status = cs.get("status", "n/a")
+            replicas = g.get("replicas")
             c = cs.get("instance_status_counts", {})
             running, creating, allocating = c.get("running_count", 0), c.get("creating_count", 0), c.get("allocating_count", 0)
             priority = g.get("priority", "low")
@@ -247,11 +291,12 @@ def snapshot(env, salad, kx, state, interval):
     else:
         errors.append("salad: SALAD_API_KEY / SALAD_ORG missing in .env")
 
-    # accumulate estimated cost: running instances × price × elapsed since last tick
+    # accumulate estimated cost: running instances × price × elapsed since last tick (gap capped)
     if state.get("last_ts"):
-        elapsed_h = (t - state["last_ts"]).total_seconds() / 3600.0
+        elapsed_h = min((t - state["last_ts"]).total_seconds() / 3600.0, MAX_GAP_H)
         state["cost_est_usd"] = state.get("cost_est_usd", 0.0) + state.get("last_cost_rate", 0.0) * elapsed_h
     state["last_ts"], state["last_cost_rate"] = t, cost_rate
+    state["replicas"] = replicas
 
     # --- Kryptex
     bal, e1 = kx.balance()
@@ -317,7 +362,7 @@ def snapshot(env, salad, kx, state, interval):
     rev_day = prl_day_measured * float(price or 0)
     cost_day = cost_rate * 24.0
     row = {
-        "ts": iso(t), "group": group_name, "status": status,
+        "ts": iso(t), "group": group_name, "status": status, "replicas": replicas,
         "running": running, "creating": creating, "allocating": allocating,
         "classes_running": ";".join(f"{k}={v}" for k, v in sorted(class_counts.items())),
         "avail_low": avail.get("available_gpu_low"), "avail_medium": avail.get("available_gpu_medium"), "avail_high": avail.get("available_gpu_high"),
@@ -340,7 +385,7 @@ def snapshot(env, salad, kx, state, interval):
     return row, inst_rows, worker_rows
 
 
-SNAP_FIELDS = ["ts", "group", "status", "running", "creating", "allocating", "classes_running",
+SNAP_FIELDS = ["ts", "group", "status", "replicas", "running", "creating", "allocating", "classes_running",
                "avail_low", "avail_medium", "avail_high", "workers_total", "workers_online",
                "ths_30m_total", "ths_3h_total", "ths_per_online_worker", "shares_valid", "shares_stale", "shares_invalid", "stale_pct",
                "prl_unconfirmed", "prl_confirmed", "prl_total", "prl_paid", "prl_unpaid", "reward_week",
@@ -375,9 +420,12 @@ def report():
     p = os.path.join(DATA, "snapshots.csv")
     if not os.path.exists(p):
         print("no data yet"); return
-    rows = list(csv.DictReader(open(p, encoding="utf-8")))
+    rows = read_rows(p)
     if not rows:
         print("no data yet"); return
+    cum = cum_cost(rows)
+    for r, c in zip(rows, cum):
+        r["cost_est_cum_usd"] = c
     f = lambda r, k: float(r[k]) if r.get(k) not in (None, "", "None") else None
     first, last = rows[0], rows[-1]
     t0 = dt.datetime.strptime(first["ts"], "%Y-%m-%dT%H:%M:%SZ")
@@ -406,11 +454,105 @@ def report():
             print(f"  {w:14} {a['ths'] / a['n']:7.1f} TH/s  valid={a['valid']} stale={a['stale']}")
 
 
+# ----------------------------------------------------------------------------- dashboard server
+SERVER_CTX = {"group": "", "interval": 0, "state": {}}
+
+
+def history_payload(since_s=0):
+    rows = read_rows(os.path.join(DATA, "snapshots.csv"))
+    cum = cum_cost(rows)
+    if since_s and rows:
+        cutoff = now_utc() - dt.timedelta(seconds=since_s)
+        keep = [i for i, r in enumerate(rows) if parse_ts(r["ts"]) >= cutoff]
+        rows = [rows[i] for i in keep]; cum = [cum[i] for i in keep]
+    last = rows[-1] if rows else {}
+    nodes = []
+    if last:
+        ts = last["ts"]
+        inst = [r for r in read_rows(os.path.join(DATA, "instances.csv")) if r.get("ts") == ts]
+        kx_w = {r["worker"]: r for r in read_rows(os.path.join(DATA, "workers.csv")) if r.get("ts") == ts}
+        ph_w = {}
+        p = os.path.join(DATA, "pearlhash_workers.jsonl")
+        if os.path.exists(p):
+            with open(p, encoding="utf-8") as f:
+                for line in f:
+                    try:
+                        j = json.loads(line)
+                    except ValueError:
+                        continue
+                    if j.get("ts") == ts and isinstance(j.get("worker"), dict):
+                        w = j["worker"]
+                        name = w.get("name") or w.get("worker") or w.get("id") or ""
+                        ph_w[name] = w
+        seen = set()
+        for i in inst:
+            w = i.get("worker", "")
+            pw = ph_w.get(w, {})
+            kw = kx_w.get(w, {})
+            hs = pw.get("estimated_hashrate_5m") or pw.get("hashrate") or pw.get("hashrate_5m")
+            nodes.append({
+                "worker": w, "machine_id": i.get("machine_id"), "state": i.get("state"), "gpu_class": i.get("gpu_class"),
+                "price_usd_h": float(i["price_usd_h"]) if i.get("price_usd_h") not in (None, "") else None,
+                "ths": ths(hs) if hs else (float(kw["ths_30m"]) if kw.get("ths_30m") else None),
+                "last_share": pw.get("last_share") or pw.get("lastShare") or kw.get("last_share"),
+            })
+            seen.add(w)
+        for name, w in ph_w.items():  # pool workers not matched to a Salad instance
+            if name in seen:
+                continue
+            hs = w.get("estimated_hashrate_5m") or w.get("hashrate")
+            nodes.append({"worker": name, "state": "pool only", "gpu_class": None, "price_usd_h": None, "ths": ths(hs) if hs else None, "last_share": w.get("last_share")})
+    return {
+        "snapshots": rows, "cost_cum": cum,
+        "latest": {"snapshot": last, "group": SERVER_CTX["group"], "interval": SERVER_CTX["interval"],
+                   "replicas": SERVER_CTX["state"].get("replicas") or (last.get("replicas") if last else None), "nodes": nodes},
+    }
+
+
+class Handler(BaseHTTPRequestHandler):
+    def log_message(self, *a):  # keep the console for the monitor summary
+        pass
+
+    def _send(self, code, body, ctype):
+        data = body if isinstance(body, bytes) else body.encode("utf-8")
+        self.send_response(code)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(data)
+
+    def do_GET(self):
+        u = urlparse(self.path)
+        try:
+            if u.path in ("/", "/index.html"):
+                with open(os.path.join(HERE, "dashboard.html"), "rb") as f:
+                    self._send(200, f.read(), "text/html; charset=utf-8")
+            elif u.path == "/api/history":
+                since = int(parse_qs(u.query).get("since", ["0"])[0] or 0)
+                self._send(200, json.dumps(history_payload(since)), "application/json")
+            elif u.path == "/api/latest":
+                self._send(200, json.dumps(history_payload()["latest"]), "application/json")
+            else:
+                self._send(404, "not found", "text/plain")
+        except Exception as e:  # never kill the server thread on a bad request
+            self._send(500, f"error: {e}", "text/plain")
+
+
+def start_server(port):
+    srv = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    th = threading.Thread(target=srv.serve_forever, daemon=True)
+    th.start()
+    print(f"dashboard: http://localhost:{port}/")
+    return srv
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--once", action="store_true", help="single snapshot and exit")
     ap.add_argument("--interval", type=int, default=600, help="seconds between snapshots (default 600)")
     ap.add_argument("--report", action="store_true", help="aggregate collected CSVs and exit")
+    ap.add_argument("--serve", type=int, metavar="PORT", help="also serve the dashboard on http://localhost:PORT/")
     args = ap.parse_args()
     if args.report:
         report(); return
@@ -430,6 +572,17 @@ def main():
             print("warning: could not load GPU class prices:", err)
     kx = Kryptex(wallet)
     state = {}
+    prev = read_rows(os.path.join(DATA, "snapshots.csv"))  # seed the cost accumulator from history
+    if prev:
+        try:
+            state["cost_est_usd"] = cum_cost(prev)[-1]
+            state["last_ts"] = parse_ts(prev[-1]["ts"])
+            state["last_cost_rate"] = float(prev[-1].get("cost_rate_usd_h") or 0)
+        except Exception:
+            state = {}
+    SERVER_CTX.update({"group": env.get("GROUP", "pearl-test-1"), "interval": args.interval, "state": state})
+    if args.serve:
+        start_server(args.serve)
     while True:
         row, inst_rows, worker_rows = snapshot(env, salad, kx, state, args.interval)
         append_csv(os.path.join(DATA, "snapshots.csv"), row, SNAP_FIELDS)

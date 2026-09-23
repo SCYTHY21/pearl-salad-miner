@@ -1,0 +1,280 @@
+<!doctype html>
+<html lang="ro">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pearl pe Salad</title>
+<style>
+  :root {
+    color-scheme: light;
+    --page: #f9f9f7; --surface: #fcfcfb; --ink: #0b0b0b; --ink-2: #52514e; --muted: #898781;
+    --grid: #e1e0d9; --axis: #c3c2b7; --border: rgba(11,11,11,0.10);
+    --s1: #2a78d6; --s2: #eb6834; --good: #0ca30c; --warn: #fab219; --serious: #ec835a; --critical: #d03b3b;
+    --good-text: #006300;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --page: #0d0d0d; --surface: #1a1a19; --ink: #ffffff; --ink-2: #c3c2b7; --muted: #898781;
+      --grid: #2c2c2a; --axis: #383835; --border: rgba(255,255,255,0.10);
+      --s1: #3987e5; --s2: #d95926; --good-text: #0ca30c;
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --page: #0d0d0d; --surface: #1a1a19; --ink: #ffffff; --ink-2: #c3c2b7; --muted: #898781;
+    --grid: #2c2c2a; --axis: #383835; --border: rgba(255,255,255,0.10);
+    --s1: #3987e5; --s2: #d95926; --good-text: #0ca30c;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--page); color: var(--ink); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; padding: 16px; }
+  header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 16px; margin-bottom: 12px; }
+  header h1 { font-size: 18px; margin: 0; font-weight: 600; }
+  header .meta { color: var(--ink-2); font-size: 13px; }
+  header .meta b { color: var(--ink); font-weight: 600; }
+  .filters { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 0 0 14px; }
+  .filters button { background: var(--surface); color: var(--ink-2); border: 1px solid var(--border); border-radius: 6px; padding: 5px 10px; cursor: pointer; font: inherit; }
+  .filters button[aria-pressed="true"] { color: var(--ink); border-color: var(--ink); font-weight: 600; }
+  .filters .spacer { flex: 1; }
+  .filters label { color: var(--ink-2); display: inline-flex; gap: 6px; align-items: center; }
+  .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; margin-bottom: 14px; }
+  .tile { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; min-height: 92px; }
+  .tile .label { color: var(--ink-2); font-size: 12px; margin-bottom: 4px; }
+  .tile .value { font-size: 26px; font-weight: 600; line-height: 1.15; }
+  .tile.hero .value { font-size: 40px; }
+  .tile .sub { color: var(--muted); font-size: 12px; margin-top: 4px; }
+  .tile .value.pos { color: var(--good-text); }
+  .tile .value.neg { color: var(--critical); }
+  .badge { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--ink-2); }
+  .badge i { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+  .charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 12px; margin-bottom: 14px; }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px 8px; }
+  .card h2 { font-size: 13px; font-weight: 600; margin: 0 0 2px; }
+  .card .sub { color: var(--muted); font-size: 12px; margin-bottom: 8px; }
+  .plot { position: relative; height: 220px; }
+  .plot canvas { width: 100% !important; height: 100% !important; }
+  .loading { opacity: 0.55; transition: opacity .2s; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--grid); white-space: nowrap; }
+  th { color: var(--ink-2); font-weight: 600; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .tablewrap { overflow-x: auto; }
+  .hidden { display: none; }
+  footer { color: var(--muted); font-size: 12px; margin-top: 12px; }
+  .err { color: var(--critical); font-size: 12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Pearl pe SaladCloud</h1>
+  <span class="meta">grup <b id="m-group">–</b> · pool PearlHash · plată în SafeTrade · actualizat <b id="m-updated">–</b> · date la fiecare <b id="m-interval">–</b> s</span>
+  <span class="err" id="m-err"></span>
+</header>
+
+<div class="filters" role="group" aria-label="Interval">
+  <button data-range="3600" aria-pressed="false">Ultima oră</button>
+  <button data-range="21600" aria-pressed="false">6 ore</button>
+  <button data-range="86400" aria-pressed="true">24 ore</button>
+  <button data-range="604800" aria-pressed="false">7 zile</button>
+  <button data-range="0" aria-pressed="false">Tot</button>
+  <span class="spacer"></span>
+  <label><input type="checkbox" id="toggle-table"> Vedere tabelară</label>
+</div>
+
+<section class="kpis" id="kpis">
+  <div class="tile hero"><div class="label">Marjă estimată pe zi</div><div class="value" id="k-margin">–</div><div class="sub" id="k-margin-sub">venit − cost, la hashrate-ul și prețul curent</div></div>
+  <div class="tile"><div class="label">Profit realizat</div><div class="value" id="k-pnl">–</div><div class="sub" id="k-pnl-sub">PRL creditat × preț − cost estimat</div></div>
+  <div class="tile"><div class="label">Cost Salad (estimat)</div><div class="value" id="k-cost">–</div><div class="sub" id="k-cost-sub">–</div></div>
+  <div class="tile"><div class="label">Instanțe</div><div class="value" id="k-inst">–</div><div class="sub" id="k-inst-sub">–</div></div>
+  <div class="tile"><div class="label">Hashrate total</div><div class="value" id="k-hash">–</div><div class="sub" id="k-hash-sub">–</div></div>
+  <div class="tile"><div class="label">Preț PRL · SafeTrade</div><div class="value" id="k-price">–</div><div class="sub" id="k-price-sub">–</div></div>
+  <div class="tile"><div class="label">PRL creditat de pool</div><div class="value" id="k-prl">–</div><div class="sub" id="k-prl-sub">–</div></div>
+  <div class="tile"><div class="label">Venit estimat pe zi</div><div class="value" id="k-rev">–</div><div class="sub" id="k-rev-sub">–</div></div>
+</section>
+
+<section class="charts" id="charts">
+  <div class="card"><h2>Hashrate</h2><div class="sub">TH/s raportat de pool (medie 5 min)</div><div class="plot"><canvas id="c-hash"></canvas></div></div>
+  <div class="card"><h2>Cost și venit cumulat</h2><div class="sub">USD de la începutul intervalului</div><div class="plot"><canvas id="c-money"></canvas></div></div>
+  <div class="card"><h2>Preț PRL</h2><div class="sub">USDT, SafeTrade via CoinGecko</div><div class="plot"><canvas id="c-price"></canvas></div></div>
+  <div class="card"><h2>Instanțe running</h2><div class="sub">din replicile cerute</div><div class="plot"><canvas id="c-inst"></canvas></div></div>
+</section>
+
+<section class="card hidden" id="table-snapshots">
+  <h2>Istoric (vedere tabelară a graficelor)</h2>
+  <div class="tablewrap"><table><thead><tr>
+    <th>Ora (UTC)</th><th class="num">Running</th><th class="num">TH/s</th><th class="num">Preț</th><th class="num">Cost cumulat</th><th class="num">PRL creditat</th><th class="num">Marjă/zi</th>
+  </tr></thead><tbody id="tb-snap"></tbody></table></div>
+</section>
+
+<section class="card" style="margin-top:12px">
+  <h2>Noduri</h2>
+  <div class="sub">instanțele Salad și workerii raportați de pool (nume = s + primele 10 caractere din machine id)</div>
+  <div class="tablewrap"><table><thead><tr>
+    <th>Worker</th><th>Stare Salad</th><th>GPU</th><th class="num">USD/h</th><th class="num">TH/s pool</th><th>Ultimul share</th>
+  </tr></thead><tbody id="tb-nodes"></tbody></table></div>
+</section>
+
+<footer>Valorile „estimat” folosesc randamentul rețelei (PRL/TH/zi) și prețul curent; „PRL creditat” și costul facturat de Salad sunt sursele de adevăr. Reconciliază cu Billing & Usage din portal.</footer>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script>
+(function () {
+  'use strict';
+  const $ = (id) => document.getElementById(id);
+  const css = (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+  const fmt = {
+    usd: (v, d = 2) => v == null || isNaN(v) ? '–' : (v < 0 ? '−' : '') + '$' + Math.abs(v).toLocaleString('ro-RO', { minimumFractionDigits: d, maximumFractionDigits: d }),
+    num: (v, d = 1) => v == null || isNaN(v) ? '–' : Number(v).toLocaleString('ro-RO', { minimumFractionDigits: d, maximumFractionDigits: d }),
+    time: (iso) => iso ? new Date(iso).toLocaleTimeString('ro-RO', { hour: '2-digit', minute: '2-digit' }) : '–',
+    dt: (iso) => iso ? new Date(iso).toLocaleString('ro-RO', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '–',
+  };
+  let range = 86400, charts = {}, lastData = null;
+
+  function hexA(hex, a) { const n = parseInt(hex.slice(1), 16); return `rgba(${n >> 16},${(n >> 8) & 255},${n & 255},${a})`; }
+
+  function baseOptions(unit) {
+    return {
+      responsive: true, maintainAspectRatio: false, animation: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          backgroundColor: css('--surface'), titleColor: css('--ink'), bodyColor: css('--ink'), borderColor: css('--border'), borderWidth: 1,
+          callbacks: { label: (c) => ` ${fmt.num(c.parsed.y, 2)} ${unit}  ${c.dataset.label || ''}` },
+        },
+      },
+      scales: {
+        x: { ticks: { color: css('--muted'), maxTicksLimit: 6, maxRotation: 0 }, grid: { color: css('--grid'), drawTicks: false }, border: { color: css('--axis') } },
+        y: { beginAtZero: true, ticks: { color: css('--muted'), maxTicksLimit: 5 }, grid: { color: css('--grid'), drawTicks: false }, border: { display: false } },
+      },
+      elements: { line: { borderWidth: 2, tension: 0, borderJoinStyle: 'round', borderCapStyle: 'round' }, point: { radius: 0, hoverRadius: 5, hoverBorderWidth: 2, hoverBorderColor: css('--surface') } },
+    };
+  }
+  const crosshair = {
+    id: 'crosshair',
+    afterDraw(chart) {
+      const a = chart.tooltip && chart.tooltip.getActiveElements();
+      if (!a || !a.length) return;
+      const x = a[0].element.x, { top, bottom } = chart.chartArea, ctx = chart.ctx;
+      ctx.save(); ctx.strokeStyle = css('--axis'); ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(x, top); ctx.lineTo(x, bottom); ctx.stroke(); ctx.restore();
+    },
+  };
+  const endLabels = {
+    id: 'endLabels',
+    afterDatasetsDraw(chart) {
+      const ctx = chart.ctx; ctx.save(); ctx.font = '12px system-ui, sans-serif'; ctx.fillStyle = css('--ink-2'); ctx.textBaseline = 'middle';
+      chart.data.datasets.forEach((ds, i) => {
+        const meta = chart.getDatasetMeta(i); const pt = meta.data[meta.data.length - 1]; if (!pt) return;
+        ctx.fillText(ds.label, Math.min(pt.x + 6, chart.chartArea.right - 60), pt.y);
+      });
+      ctx.restore();
+    },
+  };
+
+  function mkLine(id, unit, datasets, extra) {
+    const ctx = $(id).getContext('2d');
+    const opts = baseOptions(unit); Object.assign(opts.plugins, extra || {});
+    return new Chart(ctx, { type: 'line', data: { labels: [], datasets }, options: opts, plugins: [crosshair, endLabels] });
+  }
+  function series(label, color, stepped) {
+    return { label, data: [], borderColor: color, backgroundColor: hexA(color, 0.10), fill: true, stepped: !!stepped, pointBackgroundColor: color };
+  }
+  function build() {
+    charts.hash = mkLine('c-hash', 'TH/s', [series('TH/s', css('--s1'))]);
+    charts.money = mkLine('c-money', 'USD', [series('Venit', css('--s1')), series('Cost', css('--s2'))],
+      { legend: { display: true, position: 'top', align: 'end', labels: { color: css('--ink-2'), boxWidth: 18, boxHeight: 2, usePointStyle: false } } });
+    charts.price = mkLine('c-price', 'USDT', [series('USDT', css('--s1'))]);
+    charts.price.options.scales.y.beginAtZero = false;
+    charts.inst = mkLine('c-inst', '', [series('running', css('--s1'), true)]);
+    charts.inst.options.scales.y.ticks.precision = 0;
+  }
+
+  function slice(rows) {
+    if (!range) return rows;
+    const cutoff = Date.now() - range * 1000;
+    return rows.filter((r) => new Date(r.ts).getTime() >= cutoff);
+  }
+  function num(v) { return v === '' || v == null ? null : Number(v); }
+
+  function render(data) {
+    lastData = data;
+    const rows = slice(data.snapshots), cum = data.cost_cum;
+    const idx = new Map(data.snapshots.map((r, i) => [r.ts, i]));
+    const labels = rows.map((r) => fmt.time(r.ts));
+    const cost0 = rows.length ? cum[idx.get(rows[0].ts)] : 0;
+    const credited = (r) => (num(r.ph_balance) || 0) + (num(r.ph_paid) || 0);
+    const cred0 = rows.length ? credited(rows[0]) : 0;
+    charts.hash.data.labels = labels; charts.hash.data.datasets[0].data = rows.map((r) => num(r.ph_hashrate_ths) ?? num(r.ths_30m_total));
+    charts.money.data.labels = labels;
+    charts.money.data.datasets[0].data = rows.map((r) => (credited(r) - cred0) * (num(r.price_safetrade_usdt) || num(r.price_kryptex_usd) || 0));
+    charts.money.data.datasets[1].data = rows.map((r) => cum[idx.get(r.ts)] - cost0);
+    charts.price.data.labels = labels; charts.price.data.datasets[0].data = rows.map((r) => num(r.price_safetrade_usdt));
+    charts.inst.data.labels = labels; charts.inst.data.datasets[0].data = rows.map((r) => num(r.running));
+    Object.values(charts).forEach((c) => c.update());
+
+    const last = data.latest || {}, s = last.snapshot || {};
+    const price = num(s.price_safetrade_usdt) || num(s.price_kryptex_usd) || 0;
+    const costCum = cum.length ? cum[cum.length - 1] : 0;
+    const totalCredited = credited(s);
+    const pnl = totalCredited * price - costCum;
+    const margin = num(s.margin_day_usd);
+    $('m-group').textContent = last.group || '–'; $('m-updated').textContent = fmt.dt(s.ts); $('m-interval').textContent = last.interval || '–';
+    $('m-err').textContent = s.errors ? 'erori: ' + s.errors : '';
+    setVal('k-margin', fmt.usd(margin), margin); $('k-margin-sub').textContent = `venit ${fmt.usd(num(s.rev_day_usd))} − cost ${fmt.usd(num(s.cost_day_usd))} pe zi`;
+    setVal('k-pnl', fmt.usd(pnl), pnl); $('k-pnl-sub').textContent = `${fmt.num(totalCredited, 3)} PRL × ${fmt.num(price, 3)} − ${fmt.usd(costCum)}`;
+    $('k-cost').textContent = fmt.usd(costCum); $('k-cost-sub').textContent = `${fmt.usd(num(s.cost_rate_usd_h), 3)}/h acum · ${fmt.usd(num(s.cost_day_usd))}/zi la ritmul curent`;
+    $('k-inst').textContent = `${s.running ?? '–'} / ${last.replicas ?? '–'}`;
+    $('k-inst-sub').innerHTML = ''; $('k-inst-sub').appendChild(badge(s.status, `${s.status || '–'} · allocating ${s.allocating ?? 0} · ${s.classes_running || 'nicio clasă'}`));
+    const ths = num(s.ph_hashrate_ths) ?? num(s.ths_30m_total);
+    $('k-hash').textContent = ths == null ? '–' : fmt.num(ths, 0) + ' TH/s';
+    $('k-hash-sub').textContent = `${s.ph_workers ?? 0} workeri pe pool · ${s.running && ths ? fmt.num(ths / s.running, 0) + ' TH/s pe instanță' : 'așteptăm shares'}`;
+    $('k-price').textContent = price ? fmt.num(price, 3) + ' USDT' : '–';
+    $('k-price-sub').textContent = `volum 24h ${fmt.usd(num(s.volume_24h_usd), 0)} · biduri în 2%: ${fmt.usd(num(s.bids_2pct_usd), 0)}`;
+    $('k-prl').textContent = fmt.num(totalCredited, 3) + ' PRL';
+    $('k-prl-sub').textContent = `plătit ${fmt.num(num(s.ph_paid), 3)} · în așteptare ${fmt.num(num(s.ph_balance), 3)}`;
+    $('k-rev').textContent = fmt.usd(num(s.rev_day_usd));
+    $('k-rev-sub').textContent = `${fmt.num(num(s.prl_day_from_hashrate), 2)} PRL/zi din hashrate`;
+
+    const tb = $('tb-snap'); tb.textContent = '';
+    rows.slice().reverse().slice(0, 300).forEach((r) => {
+      const tr = document.createElement('tr');
+      [fmt.dt(r.ts), r.running, fmt.num(num(r.ph_hashrate_ths) ?? num(r.ths_30m_total), 0), fmt.num(num(r.price_safetrade_usdt), 3), fmt.usd(cum[idx.get(r.ts)]), fmt.num(credited(r), 3), fmt.usd(num(r.margin_day_usd))]
+        .forEach((v, i) => { const td = document.createElement('td'); td.textContent = v ?? '–'; if (i) td.className = 'num'; tr.appendChild(td); });
+      tb.appendChild(tr);
+    });
+    const tn = $('tb-nodes'); tn.textContent = '';
+    (last.nodes || []).forEach((n) => {
+      const tr = document.createElement('tr');
+      const cells = [n.worker, null, n.gpu_class || '–', n.price_usd_h != null ? fmt.num(n.price_usd_h, 3) : '–', n.ths != null ? fmt.num(n.ths, 0) : '–', n.last_share ? fmt.dt(n.last_share) : '–'];
+      cells.forEach((v, i) => { const td = document.createElement('td'); if (i === 1) td.appendChild(badge(n.state, n.state || '–')); else td.textContent = v; if (i >= 3 && i <= 4) td.className = 'num'; tr.appendChild(td); });
+      tn.appendChild(tr);
+    });
+    if (!(last.nodes || []).length) { const tr = document.createElement('tr'); const td = document.createElement('td'); td.colSpan = 6; td.textContent = 'nicio instanță running încă'; tr.appendChild(td); tn.appendChild(tr); }
+  }
+  function setVal(id, text, v) { const el = $(id); el.textContent = text; el.className = 'value' + (v > 0 ? ' pos' : v < 0 ? ' neg' : ''); }
+  function badge(state, text) {
+    const b = document.createElement('span'); b.className = 'badge';
+    const i = document.createElement('i'); const st = String(state || '').toLowerCase();
+    i.style.background = st === 'running' ? css('--good') : (st === 'deploying' || st === 'allocating' || st === 'creating' || st === 'pending') ? css('--warn') : st === 'stopped' ? css('--muted') : css('--serious');
+    b.appendChild(i); b.appendChild(document.createTextNode(text)); return b;
+  }
+
+  async function refresh() {
+    document.body.classList.add('loading');
+    try {
+      const r = await fetch('/api/history', { cache: 'no-store' });
+      const data = await r.json();
+      render(data);
+    } catch (e) { $('m-err').textContent = 'nu pot citi datele: ' + e; }
+    document.body.classList.remove('loading');
+  }
+  document.querySelectorAll('.filters button').forEach((b) => b.addEventListener('click', () => {
+    document.querySelectorAll('.filters button').forEach((x) => x.setAttribute('aria-pressed', 'false'));
+    b.setAttribute('aria-pressed', 'true'); range = Number(b.dataset.range); if (lastData) render(lastData);
+  }));
+  $('toggle-table').addEventListener('change', (e) => { $('table-snapshots').classList.toggle('hidden', !e.target.checked); $('charts').classList.toggle('hidden', e.target.checked); });
+  build(); refresh(); setInterval(refresh, 30000);
+})();
+</script>
+</body>
+</html>
