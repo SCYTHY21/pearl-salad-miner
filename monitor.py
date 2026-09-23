@@ -288,13 +288,21 @@ def snapshot(env, salad, kx, state, interval):
     if ph_acc is not None:
         with open(os.path.join(DATA, "pearlhash_account.jsonl"), "a", encoding="utf-8") as f:
             f.write(json.dumps({"ts": iso(t), "account": ph_acc}) + "\n")
-    ph_hash = PearlHash.pick(ph_acc, "hashrate", "hashrate_5m", "currentHashrate", "hashrate_15m")
-    ph_balance = PearlHash.pick(ph_acc, "balance", "unpaid", "pending", "unconfirmed")
-    ph_paid = PearlHash.pick(ph_acc, "paid", "total_paid", "totalPaid")
-    ph_workers = PearlHash.pick(ph_acc, "workers", "workers_online", "online_workers")
-    if isinstance(ph_workers, list):
-        ph_workers = len(ph_workers)
+    # /api/account shape (seen 2026-09-23): connected_workers[], estimated_hashrate_{15s,60s,5m} (H/s),
+    # balance_transactions[{amount, reason, timestamp, coin_type}] with epoch credits (+) and payouts (-)
+    acc = ph_acc or {}
+    ph_hash = acc.get("estimated_hashrate_5m")
+    ph_worker_list = acc.get("connected_workers") or []
+    ph_workers = len(ph_worker_list)
+    txs = acc.get("balance_transactions") or []
+    ph_credits = sum(float(x.get("amount") or 0) for x in txs if float(x.get("amount") or 0) > 0)
+    ph_paid = -sum(float(x.get("amount") or 0) for x in txs if float(x.get("amount") or 0) < 0)
+    ph_balance = round(ph_credits - ph_paid, 6) if txs else None
+    ph_paid = round(ph_paid, 6) if txs else None
     ph_pool_hash = (ph_pool or {}).get("hashrate")
+    for w in ph_worker_list:
+        with open(os.path.join(DATA, "pearlhash_workers.jsonl"), "a", encoding="utf-8") as f:
+            f.write(json.dumps({"ts": iso(t), "worker": w}) + "\n")
 
     # --- price
     px, e4 = safetrade_price()
