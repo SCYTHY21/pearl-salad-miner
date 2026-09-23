@@ -150,6 +150,36 @@ class Kryptex:
         return (d or {}).get("crypto", {}).get("PRL"), err
 
 
+class PearlHash:
+    """pearlhash.xyz: /api/stats (pool) and /api/account/<address> (wallet; 404 until the first share)."""
+    BASE = "https://pearlhash.xyz"
+
+    def __init__(self, wallet):
+        self.wallet = wallet
+
+    def pool(self):
+        return get_json(f"{self.BASE}/api/stats")
+
+    def account(self):
+        return get_json(f"{self.BASE}/api/account/{self.wallet}")
+
+    @staticmethod
+    def pick(d, *names):
+        """first matching key (case-insensitive, nested one level) or None"""
+        if not isinstance(d, dict):
+            return None
+        low = {k.lower(): v for k, v in d.items()}
+        for n in names:
+            if n.lower() in low:
+                return low[n.lower()]
+        for v in d.values():
+            if isinstance(v, dict):
+                r = PearlHash.pick(v, *names)
+                if r is not None:
+                    return r
+        return None
+
+
 def safetrade_price():
     d, err = get_json(COINGECKO)
     if err:
@@ -247,6 +277,25 @@ def snapshot(env, salad, kx, state, interval):
             "last_share": w.get("last_share"), "opened_at": w.get("opened_at"),
         })
 
+    # --- PearlHash (raw JSON kept verbatim; the summary uses best-effort keys until the format is known)
+    ph = PearlHash(kx.wallet)
+    ph_acc, e5 = ph.account()
+    ph_pool, e6 = ph.pool()
+    if e5 and "404" not in e5:
+        errors.append("pearlhash account: " + e5)
+    if e6:
+        errors.append("pearlhash pool: " + e6)
+    if ph_acc is not None:
+        with open(os.path.join(DATA, "pearlhash_account.jsonl"), "a", encoding="utf-8") as f:
+            f.write(json.dumps({"ts": iso(t), "account": ph_acc}) + "\n")
+    ph_hash = PearlHash.pick(ph_acc, "hashrate", "hashrate_5m", "currentHashrate", "hashrate_15m")
+    ph_balance = PearlHash.pick(ph_acc, "balance", "unpaid", "pending", "unconfirmed")
+    ph_paid = PearlHash.pick(ph_acc, "paid", "total_paid", "totalPaid")
+    ph_workers = PearlHash.pick(ph_acc, "workers", "workers_online", "online_workers")
+    if isinstance(ph_workers, list):
+        ph_workers = len(ph_workers)
+    ph_pool_hash = (ph_pool or {}).get("hashrate")
+
     # --- price
     px, e4 = safetrade_price()
     if e4:
@@ -271,6 +320,8 @@ def snapshot(env, salad, kx, state, interval):
         "stale_pct": round(100.0 * stale / (valid + stale), 2) if (valid + stale) else None,
         "prl_unconfirmed": bal.get("unconfirmed"), "prl_confirmed": bal.get("confirmed"), "prl_total": bal.get("total"),
         "prl_paid": po.get("paid"), "prl_unpaid": po.get("unpaid"), "reward_week": (po.get("reward") or {}).get("week"),
+        "ph_hashrate_ths": ths(ph_hash) if ph_hash is not None else None, "ph_balance": ph_balance, "ph_paid": ph_paid,
+        "ph_workers": ph_workers, "ph_pool_ehs": round(float(ph_pool_hash) / 1e18, 2) if ph_pool_hash else None,
         "price_safetrade_usdt": px.get("last"), "price_kryptex_usd": kx_rate,
         "volume_24h_usd": px.get("volume_usd_24h"), "bids_2pct_usd": px.get("bids_2pct_usd"), "spread_pct": px.get("spread_pct"),
         "cost_rate_usd_h": round(cost_rate, 4), "cost_est_cum_usd": round(state.get("cost_est_usd", 0.0), 4),
@@ -285,6 +336,7 @@ SNAP_FIELDS = ["ts", "group", "status", "running", "creating", "allocating", "cl
                "avail_low", "avail_medium", "avail_high", "workers_total", "workers_online",
                "ths_30m_total", "ths_3h_total", "ths_per_online_worker", "shares_valid", "shares_stale", "shares_invalid", "stale_pct",
                "prl_unconfirmed", "prl_confirmed", "prl_total", "prl_paid", "prl_unpaid", "reward_week",
+               "ph_hashrate_ths", "ph_balance", "ph_paid", "ph_workers", "ph_pool_ehs",
                "price_safetrade_usdt", "price_kryptex_usd", "volume_24h_usd", "bids_2pct_usd", "spread_pct",
                "cost_rate_usd_h", "cost_est_cum_usd", "prl_day_from_hashrate", "rev_day_usd", "cost_day_usd", "margin_day_usd", "errors"]
 INST_FIELDS = ["ts", "machine_id", "worker", "state", "ready", "started", "gpu_class", "price_usd_h", "update_time", "raw_keys"]
@@ -298,7 +350,8 @@ def print_summary(row, inst_rows, worker_rows):
     print(f"pool   : workers {row['workers_online']}/{row['workers_total']} online | {row['ths_30m_total']} TH/s (30m), "
           f"{row['ths_per_online_worker'] or 0} TH/s per online worker | shares valid/stale/invalid {row['shares_valid']}/{row['shares_stale']}/{row['shares_invalid']} "
           f"(stale {row['stale_pct'] or 0}%)")
-    print(f"wallet : unconfirmed {row['prl_unconfirmed']} | confirmed {row['prl_confirmed']} | paid {row['prl_paid']} PRL")
+    print(f"kryptex: unconfirmed {row['prl_unconfirmed']} | confirmed {row['prl_confirmed']} | paid {row['prl_paid']} PRL")
+    print(f"pearlhash: hashrate {row['ph_hashrate_ths']} TH/s | balance {row['ph_balance']} | paid {row['ph_paid']} | workers {row['ph_workers']} | pool {row['ph_pool_ehs']} EH/s")
     print(f"price  : SafeTrade {row['price_safetrade_usdt']} USDT (Kryptex {row['price_kryptex_usd']}) | vol24h {row['volume_24h_usd']} USD | bids within 2%: {row['bids_2pct_usd']} USD")
     print(f"money  : cost now {row['cost_rate_usd_h']} USD/h ({row['cost_day_usd']} USD/day) | est. cost so far {row['cost_est_cum_usd']} USD | "
           f"PRL/day from hashrate {row['prl_day_from_hashrate']} -> {row['rev_day_usd']} USD/day | margin/day {row['margin_day_usd']} USD")

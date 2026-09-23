@@ -1,0 +1,26 @@
+{
+  "name": "pearl-hash-1",
+  "display_name": "Pearl PearlHash WildRig 10 GPU",
+  "autostart_policy": true,
+  "replicas": 10,
+  "restart_policy": "always",
+  "container": {
+    "image": "ghcr.io/scythy21/pearl-salad-miner:sha-761ed5b",
+    "priority": "low",
+    "resources": {
+      "cpu": 2,
+      "memory": 4096,
+      "gpu_classes": [
+        "ed563892-aacd-40f5-80b7-90c9be6c759b",
+        "851399fb-7329-4195-a042-d6514b28cf33"
+      ]
+    },
+    "environment_variables": {
+      "WALLET": "prl1pjnk7yt52kzgn3lx2axsat3tu2szuepl7en9hvesw9qll2hlllx2qjzls9a",
+      "MINER": "wildrig srb",
+      "STARTUP_GRACE": "600",
+      "NO_SHARE_TIMEOUT": "900",
+      "STATUS_EVERY": "600"
+    }
+  }
+}
