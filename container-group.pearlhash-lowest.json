@@ -5,7 +5,7 @@
   "replicas": 0,
   "restart_policy": "always",
   "container": {
-    "image": "ghcr.io/scythy21/pearl-salad-miner:sha-761ed5b",
+    "image": "ghcr.io/scythy21/pearl-salad-miner:sha-ba7b41b",
     "priority": "batch",
     "resources": {
       "cpu": 2,
