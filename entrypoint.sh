@@ -223,9 +223,12 @@ run_miner() {
   fifo=$(mktemp -u /tmp/miner.XXXXXX)
   mkfifo "$fifo" || die "cannot create FIFO"
   cd "$(dirname "${cmd[0]}")" || die "miner directory missing"
-  # stdin from /dev/null: the container's stdin is closed on SaladCloud and WildRig aborts in
-  # libuv (uv__read_start assertion) when it tries to watch the keyboard on an invalid fd
-  "${cmd[@]}" </dev/null >"$fifo" 2>&1 &
+  # stdin must be a pipe: the container's stdin is closed on SaladCloud and WildRig aborts in
+  # libuv (uv__read_start: type must be TCP/pipe/TTY) on a closed fd and even on /dev/null.
+  # A FIFO opened read-write never blocks and never delivers EOF, so the miner just idles on it.
+  local stdin_fifo; stdin_fifo=$(mktemp -u /tmp/stdin.XXXXXX); mkfifo "$stdin_fifo"
+  exec 4<>"$stdin_fifo"; rm -f "$stdin_fifo"
+  "${cmd[@]}" <&4 >"$fifo" 2>&1 &
   MINER_PID=$!
   exec 3<"$fifo"
   rm -f "$fifo"
